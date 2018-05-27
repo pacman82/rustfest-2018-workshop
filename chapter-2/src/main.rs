@@ -39,9 +39,9 @@ extern crate tokio_stdin;
 use futures::{Future, Stream};
 use tokio_core::reactor::Core;
 
-use libp2p::{Multiaddr, PeerId};
 use libp2p::core::Transport;
-use libp2p::floodsub::{FloodSubUpgrade, FloodSubController, TopicBuilder};
+use libp2p::floodsub::{FloodSubController, FloodSubUpgrade, TopicBuilder};
+use libp2p::{Multiaddr, PeerId};
 
 fn main() {
     // Same as in chapter 1.
@@ -64,8 +64,7 @@ fn main() {
         let key = (0..2048).map(|_| rand::random::<u8>()).collect::<Vec<_>>();
         FloodSubUpgrade::new(PeerId::from_public_key(&key))
     };
-    let upgraded_transport = transport
-        .with_upgrade(floodsub_upgrade.clone());
+    let upgraded_transport = transport.with_upgrade(floodsub_upgrade.clone());
 
     // We now create a *swarm*. A swarm is a convenient object that is responsible for handling all
     // the incoming and outgoing connections in a single point.
@@ -76,9 +75,8 @@ fn main() {
     // a new connection every time. In order to add support for muxing with any transport, we can
     // just call the `with_dummy_muxing()` method of the `Transport` trait.
     let upgr_trans_with_muxing = upgraded_transport.with_dummy_muxing();
-    let (swarm_controller, swarm_future) = libp2p::swarm(
-        upgr_trans_with_muxing.clone(),
-        |future, _remote_addr| {
+    let (swarm_controller, swarm_future) =
+        libp2p::swarm(upgr_trans_with_muxing.clone(), |future, _remote_addr| {
             // The first parameter of this closure (`future`) is the output of the floodsub
             // upgrade. If we didn't apply any upgrade on the transport, it would be the raw socket
             // instead.
@@ -92,7 +90,9 @@ fn main() {
         });
 
     // Let's use the swarm to listen, instead of the raw transport.
-    let actual_multiaddr = swarm_controller.listen_on(listen_multiaddr).expect("failed to listen");
+    let actual_multiaddr = swarm_controller
+        .listen_on(listen_multiaddr)
+        .expect("failed to listen");
     println!("Now listening on {}", actual_multiaddr);
 
     // Now let's handle the floodsub protocol.
@@ -103,8 +103,7 @@ fn main() {
 
     // All the messages dispatched through the floodsub protocol belong to what is called a
     // *topic*. This is what we create here.
-    let topic = TopicBuilder::new("workshop-chapter2-topic")
-        .build();
+    let topic = TopicBuilder::new("workshop-chapter2-topic").build();
 
     // We need to subscribe to a topic in order to receive the messages that belong to it.
     // Subscribing to a topic broadcasts a message over the network to signal all the connected
@@ -112,22 +111,21 @@ fn main() {
     floodsub_controller.subscribe(&topic);
 
     // Let's tweak `floodsub_rx` so that we print on stdout the messages we receive.
-    let floodsub_rx = floodsub_rx
-        .for_each(|msg| {
-            if let Ok(msg) = String::from_utf8(msg.data) {
-                println!("> {}", msg);
-            } else {
-                println!("Received non-utf8 message");
-            }
+    let floodsub_rx = floodsub_rx.for_each(|msg| {
+        if let Ok(msg) = String::from_utf8(msg.data) {
+            println!("> {}", msg);
+        } else {
+            println!("Received non-utf8 message");
+        }
 
-            Ok(())
-        });
+        Ok(())
+    });
 
     // *** WORKSHOP ACTION ITEM HERE ***
     //
     // Your task in this chapter is to write the rest of the program:
     //
-    // - Iterate over `std::env::args().skip(1)` and call `swarm.dial_to_handler()` to dial the
+    // - Iterate over `std::env::args().skip(1)` and call `swarm.dial()` to dial the
     //   address.
     // - Use the `tokio-stdin` crate to read the message written on stdin, and publish each
     //   message on the network by calling `floodsub_controller.publish()`.
@@ -137,15 +135,38 @@ fn main() {
     // by going through A.
     //
 
+    for peer in std::env::args().skip(1) {
+        swarm_controller
+            .dial(
+                peer.parse().expect("Argument is not a valid multiaddress"),
+                upgr_trans_with_muxing.clone(),
+            )
+            .expect("Failed to connect to Peer");
+    }
+
     // This is a place-holder. Thanks to the `tokio-stdin` crate, create a stream that produces
     // the messages obtained from stdin, and call `for_each()` on it to obtain a future.
-    let stdin_future = futures::future::empty();
+    let mut buf = Vec::new();
+    let stdin_future = tokio_stdin::spawn_stdin_stream_unbounded()
+        .map_err(|()| std::io::Error::new(std::io::ErrorKind::Other, "Could not open io stream."))
+        .for_each(|byte| {
+            buf.push(byte);
+            if byte == b'\n' {
+                floodsub_controller.publish(&topic, buf.clone());
+                buf.clear();
+            }
+            Ok(())
+        });
 
     // `final_future` is a future that contains all the behaviour that we want, but nothing has
     // actually started yet. Because we created the `TcpConfig` with tokio, we need to run the
     // future through the tokio core.
     let final_future = swarm_future
-        .select(floodsub_rx).map_err(|(err, _)| err).and_then(|(_, n)| n)
-        .select(stdin_future).map_err(|(err, _)| err).and_then(|(_, n)| n);
+        .select(floodsub_rx)
+        .map_err(|(err, _)| err)
+        .and_then(|(_, n)| n)
+        .select(stdin_future)
+        .map_err(|(err, _)| err)
+        .and_then(|(_, n)| n);
     core.run(final_future).unwrap();
 }

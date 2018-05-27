@@ -33,9 +33,9 @@ extern crate libp2p;
 extern crate tokio_core;
 extern crate tokio_io;
 
-use futures::{Future, Stream};
-use tokio_io::io;
+use futures::{Future, Stream, future::Either};
 use tokio_core::reactor::Core;
+use tokio_io::io;
 
 use libp2p::Multiaddr;
 use libp2p::core::Transport;
@@ -93,11 +93,13 @@ fn main() {
         .for_each(|(data_stream, remote_addr)| {
             // For each incoming connection, write "Hello world" to it and return a future that
             // represents the moment when the writing finished.
-            println!("Successfully received incoming connection from {}", remote_addr);
-            io::write_all(data_stream, b"hello world")
-                .map(|_| ())
+            println!(
+                "Successfully received incoming connection from {}",
+                remote_addr
+            );
+            io::write_all(data_stream, b"hello world").map(|_| ())
         });
-    
+
     // We now have `listener_finished_future`, which is a future representing the moment when
     // the listener is closed or has finished processing everything.
 
@@ -125,9 +127,41 @@ fn main() {
     // - You can read the documentation of libp2p by running `cargo doc --open`.
     //
 
+    let printed_message = std::env::args().nth(1).map(|address_to_dial| {
+        let connection_opened = transport
+            .dial(
+                address_to_dial
+                    .parse()
+                    .expect("Could not parse first argument into an address to dial to"),
+            )
+            .expect("Unable to dial");
+
+        connection_opened
+            .and_then(|(data_stream, remote_address)| {
+                println!("Connected to: {}", remote_address);
+                io::read_to_end(data_stream, Vec::new())
+            })
+            .and_then(|(_tcp_stream, data)| {
+                println!(
+                    "Received: {}",
+                    String::from_utf8(data).expect("Peer did not send valid UTF8")
+                );
+                Ok(())
+            })
+    });
+
     // This is a place-holder. Dial the remote and produce a future that represents the moment
     // when you've read the hello world message sent to us.
-    let dialer_finished_future = futures::future::empty();
+    // let dialer_finished_future: Box<Future<Item = _, Error = _>> =
+    //     if let Some(printed_message) = printed_message {
+    //         Box::new(printed_message)
+    //     } else {
+    //         Box::new(futures::future::empty())
+    //     };
+
+    let dialer_finished_future = printed_message
+        .map(Either::A)
+        .unwrap_or_else(|| Either::B(futures::future::empty()));
 
     // `final_future` is a future that contains all the behaviour that we want ; it represents the
     // moment when the both the stream of incoming connections is over and when we finished reading
